@@ -1,0 +1,257 @@
+Les requêtes qui écrivent le plus de TEMP
+
+
+SELECT
+    userid::regrole AS user_name,
+    dbid::regdatabase AS database_name,
+    calls,
+    temp_blks_read,
+    temp_blks_written,
+    pg_size_pretty(temp_blks_read * current_setting('block_size')::bigint) AS temp_read,
+    pg_size_pretty(temp_blks_written * current_setting('block_size')::bigint) AS temp_written,
+    round(
+        temp_blks_written::numeric / NULLIF(calls, 0),
+        2
+    ) AS temp_written_blks_per_call,
+    query
+FROM pg_stat_statements
+WHERE temp_blks_written > 0
+ORDER BY temp_blks_written DESC
+LIMIT 50;
+
+
+Tu obtiens par exemple :
+
+ user_name | database_name | calls | temp_blks_written | temp_written | query
+-----------+---------------+-------+-------------------+--------------+------------------------
+ app       | production    | 1200  | 5242880           | 40 GB        | SELECT ...
+ app       | production    | 25    | 3145728           | 24 GB        | SELECT ...
+Important
+
+temp_blks_written correspond aux blocs temporaires écrits.
+
+Si ton block_size est le standard PostgreSQL de 8 KiB :
+
+1 temp block = 8 KiB
+
+Donc :
+
+5 242 880 blocs × 8 KiB ≈ 40 GiB
+
+************************************
+
+3. Attention : une requête peut générer beaucoup de TEMP sans beaucoup de fichiers
+
+pg_stat_statements mesure les blocs temporaires lus/écrits, pas directement le nombre de fichiers physiques pgsql_tmp.
+
+Donc pour trouver les requêtes qui consomment réellement le plus d'espace TEMP, utilise :
+
+SELECT
+    queryid,
+    calls,
+    temp_blks_written,
+    pg_size_pretty(
+        temp_blks_written * current_setting('block_size')::bigint
+    ) AS temp_written,
+    round(
+        (
+            temp_blks_written::numeric *
+            current_setting('block_size')::numeric
+        ) / NULLIF(calls, 0) / 1024 / 1024,
+        2
+    ) AS temp_mb_per_call,
+    query
+FROM pg_stat_statements
+WHERE temp_blks_written > 0
+ORDER BY temp_blks_written DESC
+LIMIT 50;
+
+***********************************************************
+
+4. Trouver les requêtes les plus "TEMP par exécution"
+
+SELECT
+    queryid,
+    calls,
+    pg_size_pretty(
+        temp_blks_written * current_setting('block_size')::bigint
+    ) AS total_temp,
+    pg_size_pretty(
+        (
+            temp_blks_written::numeric /
+            NULLIF(calls, 0) *
+            current_setting('block_size')::bigint
+        )::bigint
+    ) AS temp_per_call,
+    query
+FROM pg_stat_statements
+WHERE temp_blks_written > 0
+  AND calls > 0
+ORDER BY temp_blks_written::numeric / calls DESC
+LIMIT 50;
+
+
+*********************************************************
+
+5. TEMP lu + TEMP écrit
+
+Pour avoir une vision complète :
+
+SELECT
+    queryid,
+    calls,
+
+    pg_size_pretty(
+        temp_blks_read * current_setting('block_size')::bigint
+    ) AS temp_read,
+
+    pg_size_pretty(
+        temp_blks_written * current_setting('block_size')::bigint
+    ) AS temp_written,
+
+    pg_size_pretty(
+        (
+            (temp_blks_read + temp_blks_written)
+            * current_setting('block_size')::bigint
+        )
+    ) AS temp_io,
+
+    query
+FROM pg_stat_statements
+WHERE temp_blks_read > 0
+   OR temp_blks_written > 0
+ORDER BY
+    (temp_blks_read + temp_blks_written) DESC
+LIMIT 50;
+
+************************************************
+
+5. TEMP lu + TEMP écrit
+
+Pour avoir une vision complète :
+
+SELECT
+    queryid,
+    calls,
+
+    pg_size_pretty(
+        temp_blks_read * current_setting('block_size')::bigint
+    ) AS temp_read,
+
+    pg_size_pretty(
+        temp_blks_written * current_setting('block_size')::bigint
+    ) AS temp_written,
+
+    pg_size_pretty(
+        (
+            (temp_blks_read + temp_blks_written)
+            * current_setting('block_size')::bigint
+        )
+    ) AS temp_io,
+
+    query
+FROM pg_stat_statements
+WHERE temp_blks_read > 0
+   OR temp_blks_written > 0
+ORDER BY
+    (temp_blks_read + temp_blks_written) DESC
+LIMIT 50;
+
+**************************************************************
+6. Identifier la requête exacte
+
+Une fois que tu as trouvé un queryid intéressant :
+
+SELECT *
+FROM pg_stat_statements
+WHERE queryid = 123456789;
+
+Tu peux ensuite examiner son plan :
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT ...;
+
+Cherche notamment :
+
+Sort Method: external merge  Disk: 123456kB
+
+ou :
+
+Hash
+Batches: 8
+
+ou encore :
+
+temp read=...
+temp written=...
+
+Par exemple :
+
+Sort Method: external merge  Disk: 204800kB
+
+signifie que le Sort n'a pas pu tenir dans work_mem et a utilisé le disque.
+
+
+*********************************************************************************
+
+7. Très important : pg_stat_statements est cumulatif
+
+Les valeurs sont cumulées depuis le dernier reset de pg_stat_statements.
+
+Tu peux vérifier :
+
+SELECT
+    stats_reset
+FROM pg_stat_statements_info;
+
+Si tu veux faire une mesure propre sur une période donnée :
+
+SELECT pg_stat_statements_reset();
+
+Puis tu laisses tourner l'application pendant, par exemple, 1 heure et tu exécutes :
+
+SELECT
+    queryid,
+    calls,
+    pg_size_pretty(
+        temp_blks_written * current_setting('block_size')::bigint
+    ) AS temp_written,
+    round(
+        temp_blks_written::numeric / NULLIF(calls, 0),
+        2
+    ) AS temp_blocks_per_call,
+    query
+FROM pg_stat_statements
+WHERE temp_blks_written > 0
+ORDER BY temp_blks_written DESC
+LIMIT 30;
+La méthode que je recommande
+
+Pour ton problème, fais :
+
+1. Reset
+
+SELECT pg_stat_statements_reset();
+
+2. Laisse l'activité normale tourner.
+
+3. Recherche les gros consommateurs :
+
+SELECT
+    queryid,
+    calls,
+    pg_size_pretty(temp_blks_written * 8192) AS temp_written,
+    pg_size_pretty(
+        (temp_blks_written::numeric / NULLIF(calls,0) * 8192)::bigint
+    ) AS temp_per_call,
+    query
+FROM pg_stat_statements
+WHERE temp_blks_written > 0
+ORDER BY temp_blks_written DESC
+LIMIT 30;
+
+4. Puis analyse les 5 premières requêtes avec EXPLAIN (ANALYZE, BUFFERS).
+
+C'est généralement là que tu vas découvrir un sort, hash join, hash aggregate, GROUP BY, ORDER BY, DISTINCT, etc. qui déborde de work_mem vers les fichiers TEMP.
+
+Et oui, comme dans ta question précédente : les temporary tables et les fichiers TEMP ne sont pas exactement la même chose. Une CREATE TEMP TABLE crée une table temporaire, tandis que temp_blks_written peut aussi provenir des opérations internes de tri/hash qui débordent sur disque.
