@@ -1,0 +1,409 @@
+Oui. Je te propose une installation propre sur AlmaLinux avec 3 instances systemd indépendantes, chacune sur un port différent :
+
+Instance	Port	work_mem
+pgbouncer-64m	6432	64 MB
+pgbouncer-256m	6433	256 MB
+pgbouncer-512m	6434	512 MB
+
+L'application ne change que l'URL de connexion selon le profil voulu. Avec pool_mode=transaction, PgBouncer réutilise la connexion serveur après chaque transaction.
+
+Correction importante par rapport à mon message précédent : server_reset_query est exécuté après la transaction, juste avant que la connexion serveur soit rendue disponible. connect_query, lui, est exécuté lors de la création de la connexion serveur.
+
+1. Installer PgBouncer
+
+Sur AlmaLinux :
+
+sudo dnf install -y pgbouncer
+
+Vérifie :
+
+pgbouncer -V
+
+La version actuelle publiée par le projet est 1.26.0.
+
+Vérifie également le chemin du binaire :
+
+which pgbouncer
+
+Je vais supposer :
+
+/usr/bin/pgbouncer
+
+Si ton système retourne /usr/sbin/pgbouncer, adapte simplement les fichiers systemd ci-dessous.
+
+2. Créer l'utilisateur système
+sudo useradd --system --home-dir /var/lib/pgbouncer --shell /sbin/nologin pgbouncer
+
+Créer les répertoires :
+
+sudo mkdir -p /etc/pgbouncer
+sudo mkdir -p /var/log/pgbouncer
+sudo mkdir -p /run/pgbouncer
+
+Permissions :
+
+sudo chown -R pgbouncer:pgbouncer /var/log/pgbouncer
+sudo chown -R pgbouncer:pgbouncer /run/pgbouncer
+sudo chown -R pgbouncer:pgbouncer /etc/pgbouncer
+3. Créer le fichier d'authentification
+sudo vi /etc/pgbouncer/userlist.txt
+
+Exemple :
+
+"appuser" "MonMotDePasse"
+
+Puis :
+
+sudo chown pgbouncer:pgbouncer /etc/pgbouncer/userlist.txt
+sudo chmod 600 /etc/pgbouncer/userlist.txt
+
+Important : ici appuser doit être un utilisateur PostgreSQL existant sur le serveur cible.
+
+4. Configuration 64 MB
+
+Créer :
+
+sudo vi /etc/pgbouncer/pgbouncer-64m.ini
+
+Contenu :
+
+[databases]
+
+appdb = host=127.0.0.1 port=5432 dbname=appdb
+
+[pgbouncer]
+
+listen_addr = 0.0.0.0
+listen_port = 6432
+
+unix_socket_dir = /run/pgbouncer
+unix_socket_mode = 0770
+
+auth_type = scram-sha-256
+auth_file = /etc/pgbouncer/userlist.txt
+
+pool_mode = transaction
+
+max_client_conn = 1000
+default_pool_size = 50
+min_pool_size = 5
+
+reserve_pool_size = 10
+reserve_pool_timeout = 5
+
+server_reset_query = DISCARD ALL; SET work_mem = '64MB'
+server_reset_query_always = 1
+
+connect_query = SET work_mem = '64MB'
+
+server_check_query = SELECT 1
+server_check_delay = 30
+
+server_idle_timeout = 600
+server_lifetime = 3600
+
+logfile = /var/log/pgbouncer/pgbouncer-64m.log
+pidfile = /run/pgbouncer/pgbouncer-64m.pid
+
+admin_users = pgbouncer_admin
+stats_users = pgbouncer_admin
+5. Configuration 256 MB
+sudo vi /etc/pgbouncer/pgbouncer-256m.ini
+[databases]
+
+appdb = host=127.0.0.1 port=5432 dbname=appdb
+
+[pgbouncer]
+
+listen_addr = 0.0.0.0
+listen_port = 6433
+
+unix_socket_dir = /run/pgbouncer
+unix_socket_mode = 0770
+
+auth_type = scram-sha-256
+auth_file = /etc/pgbouncer/userlist.txt
+
+pool_mode = transaction
+
+max_client_conn = 1000
+default_pool_size = 50
+min_pool_size = 5
+
+reserve_pool_size = 10
+reserve_pool_timeout = 5
+
+server_reset_query = DISCARD ALL; SET work_mem = '256MB'
+server_reset_query_always = 1
+
+connect_query = SET work_mem = '256MB'
+
+server_check_query = SELECT 1
+server_check_delay = 30
+
+server_idle_timeout = 600
+server_lifetime = 3600
+
+logfile = /var/log/pgbouncer/pgbouncer-256m.log
+pidfile = /run/pgbouncer/pgbouncer-256m.pid
+
+admin_users = pgbouncer_admin
+stats_users = pgbouncer_admin
+6. Configuration 512 MB
+sudo vi /etc/pgbouncer/pgbouncer-512m.ini
+[databases]
+
+appdb = host=127.0.0.1 port=5432 dbname=appdb
+
+[pgbouncer]
+
+listen_addr = 0.0.0.0
+listen_port = 6434
+
+unix_socket_dir = /run/pgbouncer
+unix_socket_mode = 0770
+
+auth_type = scram-sha-256
+auth_file = /etc/pgbouncer/userlist.txt
+
+pool_mode = transaction
+
+max_client_conn = 1000
+default_pool_size = 50
+min_pool_size = 5
+
+reserve_pool_size = 10
+reserve_pool_timeout = 5
+
+server_reset_query = DISCARD ALL; SET work_mem = '512MB'
+server_reset_query_always = 1
+
+connect_query = SET work_mem = '512MB'
+
+server_check_query = SELECT 1
+server_check_delay = 30
+
+server_idle_timeout = 600
+server_lifetime = 3600
+
+logfile = /var/log/pgbouncer/pgbouncer-512m.log
+pidfile = /run/pgbouncer/pgbouncer-512m.pid
+
+admin_users = pgbouncer_admin
+stats_users = pgbouncer_admin
+7. Créer l'utilisateur d'administration PgBouncer
+
+Ajoute dans :
+
+sudo vi /etc/pgbouncer/userlist.txt
+
+par exemple :
+
+"appuser" "MonMotDePasse"
+"pgbouncer_admin" "AdminPgBouncerPassword"
+
+Puis :
+
+sudo chown pgbouncer:pgbouncer /etc/pgbouncer/userlist.txt
+sudo chmod 600 /etc/pgbouncer/userlist.txt
+8. Créer les services systemd
+
+Crée :
+
+sudo vi /etc/systemd/system/pgbouncer-64m.service
+[Unit]
+Description=PgBouncer - 64MB work_mem
+After=network.target
+
+[Service]
+Type=simple
+User=pgbouncer
+Group=pgbouncer
+
+ExecStart=/usr/bin/pgbouncer /etc/pgbouncer/pgbouncer-64m.ini
+ExecReload=/bin/kill -HUP $MAINPID
+
+Restart=on-failure
+RestartSec=5
+
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+
+Puis :
+
+sudo vi /etc/systemd/system/pgbouncer-256m.service
+[Unit]
+Description=PgBouncer - 256MB work_mem
+After=network.target
+
+[Service]
+Type=simple
+User=pgbouncer
+Group=pgbouncer
+
+ExecStart=/usr/bin/pgbouncer /etc/pgbouncer/pgbouncer-256m.ini
+ExecReload=/bin/kill -HUP $MAINPID
+
+Restart=on-failure
+RestartSec=5
+
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+
+Et :
+
+sudo vi /etc/systemd/system/pgbouncer-512m.service
+[Unit]
+Description=PgBouncer - 512MB work_mem
+After=network.target
+
+[Service]
+Type=simple
+User=pgbouncer
+Group=pgbouncer
+
+ExecStart=/usr/bin/pgbouncer /etc/pgbouncer/pgbouncer-512m.ini
+ExecReload=/bin/kill -HUP $MAINPID
+
+Restart=on-failure
+RestartSec=5
+
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+
+Le lancement de PgBouncer avec un fichier de configuration spécifique est supporté directement par la commande pgbouncer <pgbouncer.ini>.
+
+9. Recharger systemd
+sudo systemctl daemon-reload
+
+Activer les trois :
+
+sudo systemctl enable pgbouncer-64m
+sudo systemctl enable pgbouncer-256m
+sudo systemctl enable pgbouncer-512m
+
+Démarrer :
+
+sudo systemctl start pgbouncer-64m
+sudo systemctl start pgbouncer-256m
+sudo systemctl start pgbouncer-512m
+
+Vérifier :
+
+sudo systemctl status pgbouncer-64m
+sudo systemctl status pgbouncer-256m
+sudo systemctl status pgbouncer-512m
+10. Vérifier les ports
+sudo ss -lntp | grep -E '6432|6433|6434'
+
+Tu dois avoir :
+
+LISTEN ... :6432
+LISTEN ... :6433
+LISTEN ... :6434
+11. Ouvrir le firewall
+
+Si les applications sont sur une autre machine :
+
+sudo firewall-cmd --permanent --add-port=6432/tcp
+sudo firewall-cmd --permanent --add-port=6433/tcp
+sudo firewall-cmd --permanent --add-port=6434/tcp
+sudo firewall-cmd --reload
+
+Je recommande cependant de ne pas exposer ces ports à Internet : limite-les à l'IP/réseau de tes serveurs applicatifs.
+
+12. Tester directement avec psql
+Profil 64 MB
+PGPASSWORD='MonMotDePasse' psql \
+  -h 127.0.0.1 \
+  -p 6432 \
+  -U appuser \
+  -d appdb \
+  -c "SHOW work_mem;"
+
+Résultat attendu :
+
+ work_mem
+----------
+ 64MB
+Profil 256 MB
+PGPASSWORD='MonMotDePasse' psql \
+  -h 127.0.0.1 \
+  -p 6433 \
+  -U appuser \
+  -d appdb \
+  -c "SHOW work_mem;"
+
+Résultat :
+
+ 256MB
+Profil 512 MB
+PGPASSWORD='MonMotDePasse' psql \
+  -h 127.0.0.1 \
+  -p 6434 \
+  -U appuser \
+  -d appdb \
+  -c "SHOW work_mem;"
+
+Résultat :
+
+ 512MB
+13. Connexion JDBC
+
+Tu n'as alors aucun SET à ajouter dans l'application.
+
+Profil 64 MB :
+
+jdbc:postgresql://serveur-pgbouncer:6432/appdb
+
+Profil 256 MB :
+
+jdbc:postgresql://serveur-pgbouncer:6433/appdb
+
+Profil 512 MB :
+
+jdbc:postgresql://serveur-pgbouncer:6434/appdb
+
+Donc :
+
+                         PostgreSQL
+                         :5432
+                            ▲
+             ┌──────────────┼──────────────┐
+             │              │              │
+        PgBouncer       PgBouncer      PgBouncer
+          :6432           :6433          :6434
+          64 MB           256 MB         512 MB
+             ▲              ▲              ▲
+             │              │              │
+          JDBC A         JDBC B         JDBC C
+Pourquoi server_reset_query_always = 1 ?
+
+Normalement, PgBouncer n'exécute pas server_reset_query en transaction pooling. Avec server_reset_query_always=1, on lui demande explicitement de le faire après chaque transaction. La documentation précise toutefois que cette option est destinée aux applications qui utilisent des fonctionnalités de session avec le transaction pooling et qu'elle peut transformer des problèmes non déterministes en comportement déterministe.
+
+Ici, c'est volontaire : chaque instance possède un seul profil work_mem, donc après chaque transaction :
+
+DISCARD ALL;
+SET work_mem = '64MB';
+
+puis la connexion serveur retourne au pool.
+
+⚠️ Un point à connaître
+
+work_mem est une mémoire par opération de tri/hash, pas une limite globale par connexion. Donc 512MB peut potentiellement consommer beaucoup plus que 512 MB si une requête exécute plusieurs opérations nécessitant work_mem, et plusieurs requêtes peuvent tourner simultanément.
+
+Pour une configuration de production, je partirais plutôt avec :
+
+6432 → 64MB
+6433 → 128MB
+6434 → 256MB
+
+et je réserverais 512MB aux requêtes qui le justifient réellement.
+
+Enfin, cette architecture à 3 instances est surtout intéressante parce que tu veux conserver exactement la même application et simplement choisir le profil par le port. PgBouncer supporte également connect_query par base, mais celui-ci n'est exécuté qu'à l'établissement d'une connexion serveur, tandis que server_reset_query_always permet ici le rétablissement après chaque transaction.
