@@ -1,0 +1,114 @@
+CREATE TABLE documents (
+    id BIGSERIAL PRIMARY KEY,
+    filename VARCHAR(255) NOT NULL,
+    content_type VARCHAR(100) DEFAULT 'application/pdf',
+    pdf_data BYTEA NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+
+
+############################ insert ##################
+
+import psycopg2
+import os
+import sys
+
+# PostgreSQL connection parameters
+DB_CONFIG = {
+    "host": "localhost",
+    "port": 5432,
+    "database": "mydatabase",
+    "user": "postgres",
+    "password": "mypassword"
+}
+
+def insert_pdf(pdf_path):
+
+    if not os.path.isfile(pdf_path):
+        print("Error: PDF file not found")
+        return
+
+    if not pdf_path.lower().endswith(".pdf"):
+        print("Error: File must have a PDF extension")
+        return
+
+    try:
+        # Read PDF as binary
+        with open(pdf_path, "rb") as pdf_file:
+            pdf_binary = pdf_file.read()
+
+        # Connect to PostgreSQL
+        conn = psycopg2.connect(**DB_CONFIG)
+
+        cursor = conn.cursor()
+
+        # Insert PDF into BYTEA column
+        sql = """
+            INSERT INTO documents
+                (filename, content_type, pdf_data)
+            VALUES (%s, %s, %s)
+            RETURNING id;
+        """
+
+        cursor.execute(
+            sql,
+            (
+                os.path.basename(pdf_path),
+                "application/pdf",
+                psycopg2.Binary(pdf_binary)
+            )
+        )
+
+        document_id = cursor.fetchone()[0]
+
+        conn.commit()
+
+        print(f"PDF successfully inserted. ID: {document_id}")
+
+        cursor.close()
+        conn.close()
+
+    except Exception as error:
+        print(f"Database error: {error}")
+
+
+if __name__ == "__main__":
+
+    if len(sys.argv) != 2:
+        print("Usage: python insert_pdf.py document.pdf")
+        sys.exit(1)
+
+    insert_pdf(sys.argv[1])
+#######################################################################
+
+
+
+
+
+import psycopg2
+
+conn = psycopg2.connect(
+    host="localhost",
+    database="mydatabase",
+    user="postgres",
+    password="mypassword"
+)
+
+cursor = conn.cursor()
+
+cursor.execute("""
+    SELECT filename, pdf_data
+    FROM documents
+    WHERE id = %s
+""", (1,))
+
+filename, pdf_data = cursor.fetchone()
+
+with open(filename, "wb") as f:
+    f.write(bytes(pdf_data))
+
+print("PDF successfully extracted")
+
+cursor.close()
+conn.close()
